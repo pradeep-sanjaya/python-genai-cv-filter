@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Folder Uploader</title>
+    <script src="./streamlit-component-lib.js"></script>
+    <style>
+        .folder-upload {
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background-color: #ffffff;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .folder-upload:hover {
+            border-color: #666;
+            background-color: #f8f9fa;
+        }
+
+        .folder-upload.dragover {
+            border-color: #1f77b4;
+            background-color: rgba(31, 119, 180, 0.1);
+        }
+
+        .folder-icon {
+            font-size: 48px;
+            color: #666;
+            margin-bottom: 10px;
+            transition: transform 0.3s ease;
+        }
+
+        .folder-upload:hover .folder-icon {
+            transform: scale(1.1);
+        }
+
+        .upload-text {
+            color: #666;
+            margin-bottom: 5px;
+            font-size: 1.1em;
+            font-weight: 500;
+        }
+
+        .upload-subtext {
+            color: #999;
+            font-size: 0.9em;
+        }
+
+        .error-message {
+            color: #dc3545;
+            margin-top: 10px;
+            font-size: 0.9em;
+            display: none;
+        }
+
+        .progress-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            height: 4px;
+            background-color: #1f77b4;
+            width: 0%;
+            transition: width 0.3s ease;
+            display: none;
+        }
+
+        .file-list {
+            margin-top: 15px;
+            text-align: left;
+            max-height: 100px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .file-item {
+            padding: 5px;
+            border-bottom: 1px solid #eee;
+            font-size: 0.9em;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .file-name {
+            flex-grow: 1;
+            margin-right: 10px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .file-size {
+            color: #666;
+            font-size: 0.8em;
+        }
+    </style>
+</head>
+<body>
+    <div class="folder-upload" id="folderUpload">
+        <div class="folder-icon">📁</div>
+        <div class="upload-text" id="uploadText">Loading...</div>
+        <div class="upload-subtext" id="uploadSubtext"></div>
+        <div class="error-message" id="errorMessage"></div>
+        <div class="progress-bar" id="progressBar"></div>
+        <div class="file-list" id="fileList"></div>
+    </div>
+
+    <script>
+        // Initialize Streamlit component
+        const Streamlit = window.Streamlit;
+        let componentConfig = {};
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function showError(message) {
+            const errorElement = document.getElementById('errorMessage');
+            errorElement.textContent = message;
+            errorElement.style.display = 'block';
+            setTimeout(() => {
+                errorElement.style.display = 'none';
+            }, 5000);
+        }
+
+        function updateProgress(progress) {
+            const progressBar = document.getElementById('progressBar');
+            progressBar.style.display = 'block';
+            progressBar.style.width = `${progress}%`;
+            if (progress >= 100) {
+                setTimeout(() => {
+                    progressBar.style.display = 'none';
+                    progressBar.style.width = '0%';
+                }, 1000);
+            }
+        }
+
+        function validateFile(file) {
+            if (componentConfig.allowed_extensions && componentConfig.allowed_extensions.length > 0) {
+                const ext = '.' + file.name.split('.').pop().toLowerCase();
+                if (!componentConfig.allowed_extensions.map(e => e.toLowerCase()).includes(ext)) {
+                    return `File type ${ext} not allowed`;
+                }
+            }
+            if (file.size > componentConfig.max_file_size) {
+                return `File size exceeds ${formatFileSize(componentConfig.max_file_size)}`;
+            }
+            return null;
+        }
+
+        function handleFiles(files) {
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = '';
+            fileList.style.display = 'block';
+
+            const validFiles = [];
+            let totalSize = 0;
+
+            Array.from(files).forEach(file => {
+                const error = validateFile(file);
+                if (!error) {
+                    validFiles.push({
+                        name: file.name,
+                        size: file.size,
+                        type: file.type
+                    });
+                    totalSize += file.size;
+
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+                    fileItem.innerHTML = `
+                        <span class="file-name">${file.name}</span>
+                        <span class="file-size">${formatFileSize(file.size)}</span>
+                    `;
+                    fileList.appendChild(fileItem);
+                } else {
+                    showError(error);
+                }
+            });
+
+            if (validFiles.length > 0) {
+                updateProgress(100);
+                Streamlit.setComponentValue({
+                    files: validFiles,
+                    totalSize: totalSize,
+                    path: validFiles[0].name.split('/')[0]  // Get folder name from first file
+                });
+            }
+        }
+
+        // Set up the component when Streamlit is connected
+        Streamlit.setComponentReady();
+
+        // Handle configuration updates from Python
+        Streamlit.componentDidMount((event) => {
+            componentConfig = event.detail.args.config;
+            
+            // Update UI with configuration
+            const uploadText = document.getElementById('uploadText');
+            const uploadSubtext = document.getElementById('uploadSubtext');
+            uploadText.textContent = componentConfig.label || 'Upload Folder';
+            uploadSubtext.textContent = componentConfig.help || 'Drag and drop a folder here';
+            
+            // Set component height
+            Streamlit.setFrameHeight(componentConfig.height || 200);
+        });
+
+        const folderUpload = document.getElementById('folderUpload');
+
+        // Handle drag and drop
+        folderUpload.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            folderUpload.classList.add('dragover');
+        });
+
+        folderUpload.addEventListener('dragleave', () => {
+            folderUpload.classList.remove('dragover');
+        });
+
+        folderUpload.addEventListener('drop', (e) => {
+            e.preventDefault();
+            folderUpload.classList.remove('dragover');
+            
+            const items = e.dataTransfer.items;
+            const files = [];
+            let remainingItems = items.length;
+
+            function processEntry(entry) {
+                if (entry.isFile) {
+                    entry.file(file => {
+                        files.push(file);
+                        remainingItems--;
+                        if (remainingItems === 0) {
+                            handleFiles(files);
+                        }
+                    });
+                } else if (entry.isDirectory) {
+                    const reader = entry.createReader();
+                    reader.readEntries(entries => {
+                        remainingItems += entries.length - 1;
+                        entries.forEach(processEntry);
+                    });
+                }
+            }
+
+            for (let i = 0; i < items.length; i++) {
+                const entry = items[i].webkitGetAsEntry();
+                if (entry) {
+                    processEntry(entry);
+                }
+            }
+        });
+
+        // Handle click to browse
+        folderUpload.addEventListener('click', () => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.webkitdirectory = true;
+            input.style.display = 'none';
+            
+            input.addEventListener('change', () => {
+                handleFiles(input.files);
+            });
+            
+            input.click();
+        });
+    </script>
+</body>
+</html>

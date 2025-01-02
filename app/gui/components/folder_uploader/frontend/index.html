@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Folder Uploader</title>
+    <style>
+        .folder-upload {
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.3s ease;
+            margin-bottom: 20px;
+        }
+        .folder-upload:hover {
+            border-color: #666;
+        }
+        .folder-upload.dragover {
+            border-color: #1f77b4;
+            background-color: rgba(31, 119, 180, 0.1);
+        }
+        .folder-icon {
+            font-size: 48px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+        .upload-text {
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .upload-subtext {
+            color: #999;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="folder-upload" id="folderUpload">
+        <div class="folder-icon">📁</div>
+        <div class="upload-text">Drag & Drop CV Folder Here</div>
+        <div class="upload-subtext">or click to browse</div>
+    </div>
+
+    <script>
+        // Initialize communication with Streamlit
+        const Streamlit = window.Streamlit || {};
+
+        function sendValue(value) {
+            Streamlit.setComponentValue(value);
+        }
+
+        const folderUpload = document.getElementById('folderUpload');
+
+        // Handle drag and drop
+        folderUpload.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            folderUpload.classList.add('dragover');
+        });
+
+        folderUpload.addEventListener('dragleave', () => {
+            folderUpload.classList.remove('dragover');
+        });
+
+        folderUpload.addEventListener('drop', (e) => {
+            e.preventDefault();
+            folderUpload.classList.remove('dragover');
+            
+            if (e.dataTransfer.items) {
+                for (let i = 0; i < e.dataTransfer.items.length; i++) {
+                    const item = e.dataTransfer.items[i];
+                    if (item.kind === 'file') {
+                        const entry = item.webkitGetAsEntry();
+                        if (entry && entry.isDirectory) {
+                            sendValue(entry.fullPath);
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        // Handle click to browse
+        folderUpload.addEventListener('click', () => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.webkitdirectory = true;
+            input.style.display = 'none';
+            
+            input.addEventListener('change', () => {
+                if (input.files.length > 0) {
+                    const folderPath = input.files[0].webkitRelativePath.split('/')[0];
+                    sendValue('/' + folderPath);
+                }
+            });
+            
+            input.click();
+        });
+
+        // Tell Streamlit we're ready
+        Streamlit.setComponentReady();
+    </script>
+</body>
+</html>

@@ -1,0 +1,2 @@
+include streamlit_folder_upload/frontend/*
+include README.md

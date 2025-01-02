@@ -1,0 +1,70 @@
+services:
+  weaviate:
+    image: semitechnologies/weaviate:1.21.3
+    ports:
+      - "8080:8080"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      DEFAULT_VECTORIZER_MODULE: 'text2vec-transformers'
+      ENABLE_MODULES: 'text2vec-transformers'
+      TRANSFORMERS_INFERENCE_API: 'http://t2v-transformer:8080'
+      LOG_LEVEL: 'debug'
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    depends_on:
+      - t2v-transformer
+
+  t2v-transformer:
+    image: semitechnologies/transformers-inference:sentence-transformers-multi-qa-MiniLM-L6-cos-v1
+    environment:
+      ENABLE_CUDA: '0'
+
+  processor:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.processor
+    volumes:
+      - type: bind
+        source: ${PWD}/..
+        target: /app
+      - type: bind
+        source: ${PWD}/../../data
+        target: /data
+      - type: volume
+        source: pip_cache
+        target: /root/.cache/pip
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WEAVIATE_URL=http://weaviate:8080
+      - PYTHONPATH=/app
+    depends_on:
+      - weaviate
+
+  gui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gui
+    volumes:
+      - type: bind
+        source: ${PWD}/..
+        target: /app
+      - type: bind
+        source: ${PWD}/../../data
+        target: /data
+      - type: volume
+        source: pip_cache
+        target: /root/.cache/pip
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WEAVIATE_URL=http://weaviate:8080
+      - PYTHONPATH=/app
+    depends_on:
+      - weaviate
+
+volumes:
+  weaviate_data:
+  pip_cache:
