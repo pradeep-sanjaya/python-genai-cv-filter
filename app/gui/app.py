@@ -13,6 +13,7 @@ import glob
 from pathlib import Path
 import re
 import logging
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -22,6 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger('CV_GUI')
 
 # Add parent directory to Python path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import config
 from processor.processor import CVProcessor
 
@@ -31,8 +33,29 @@ logger.info(f"CV directory exists: {os.path.exists(config.CV_DIR)}")
 if os.path.exists(config.CV_DIR):
     logger.info(f"CV directory contents: {os.listdir(config.CV_DIR)}")
 
-# Import the folder uploader component
-# from components.streamlit_folder_upload.streamlit_folder_upload import folder_uploader
+# Define tech skills dictionary with colors
+TECH_SKILLS = {
+    "Python": {"aliases": ["python3", "py"], "color": "blue"},
+    "JavaScript": {"aliases": ["js", "es6", "node.js", "nodejs"], "color": "yellow"},
+    "Java": {"aliases": ["java8", "java11", "java17"], "color": "orange"},
+    "C++": {"aliases": ["cpp", "c plus plus"], "color": "pink"},
+    "C#": {"aliases": ["csharp", "c sharp", ".net"], "color": "purple"},
+    "SQL": {"aliases": ["mysql", "postgresql", "oracle"], "color": "green"},
+    "React": {"aliases": ["reactjs", "react.js"], "color": "cyan"},
+    "Angular": {"aliases": ["angular.js", "angularjs"], "color": "red"},
+    "Vue.js": {"aliases": ["vuejs", "vue"], "color": "teal"},
+    "Docker": {"aliases": ["containerization", "docker-compose"], "color": "blue"},
+    "Kubernetes": {"aliases": ["k8s", "container orchestration"], "color": "violet"},
+    "AWS": {"aliases": ["amazon web services", "ec2", "s3"], "color": "orange"},
+    "Azure": {"aliases": ["microsoft azure", "azure cloud"], "color": "blue"},
+    "GCP": {"aliases": ["google cloud", "google cloud platform"], "color": "green"},
+    "Git": {"aliases": ["github", "gitlab", "version control"], "color": "orange"},
+    "CI/CD": {"aliases": ["continuous integration", "jenkins", "gitlab ci"], "color": "purple"},
+    "Machine Learning": {"aliases": ["ml", "deep learning", "ai"], "color": "blue"},
+    "Data Science": {"aliases": ["data analytics", "statistics"], "color": "green"},
+    "DevOps": {"aliases": ["sre", "site reliability"], "color": "red"},
+    "Agile": {"aliases": ["scrum", "kanban"], "color": "teal"},
+}
 
 class CVAnalyzer:
     def __init__(self, weaviate_url: str = None):
@@ -57,473 +80,365 @@ class CVAnalyzer:
             st.stop()
             
         self.processor = CVProcessor(weaviate_url=config.WEAVIATE_URL)
-        # Get tech skills from processor
-        self.tech_skills = list(self.processor.tech_skills.keys())
+        self.tech_skills = list(TECH_SKILLS.keys())
 
-    def find_best_candidates(self, selected_skills: List[str], limit: int = 5) -> List[Dict]:
-        """Find the best candidates based on selected skills (AND operator)"""
-        if not selected_skills:
-            return []
-
+    def find_candidates_by_skills(self, skills: List[str], limit: int = 10):
+        """Find candidates that have any of the selected skills"""
         try:
-            # Build a query that requires ALL selected skills
-            result = (
+            if not skills:
+                return []
+
+            logger.info(f"Searching for candidates with skills: {skills}")
+
+            # Get all objects to verify data
+            all_objects = (
                 self.client.query
-                .get("Resume", ["filename", "skills", "content"])
-                .with_where({
-                    "path": ["skills"],
-                    "operator": "ContainsAll",
-                    "valueStringArray": selected_skills
-                })
+                .get("CV", ["content", "skills", "filename"])
+                .do()
+            )
+            
+            if all_objects and 'data' in all_objects and 'Get' in all_objects['data'] and 'CV' in all_objects['data']['Get']:
+                all_cvs = all_objects['data']['Get']['CV']
+                logger.info(f"Total CVs in database: {len(all_cvs)}")
+                for cv in all_cvs:
+                    logger.info(f"CV {cv['filename']} has skills: {cv.get('skills', [])}")
+            else:
+                logger.warning("No CVs found in database!")
+                return []
+
+            # First try exact skill matches
+            where_filter = {
+                "path": ["skills"],
+                "operator": "ContainsAny",
+                "valueStringArray": skills
+            }
+
+            # Query Weaviate with the filter
+            results = (
+                self.client.query
+                .get("CV", ["content", "skills", "filename"])
+                .with_where(where_filter)
                 .with_limit(limit)
                 .do()
             )
+            
+            candidates = []
+            if results and 'data' in results and 'Get' in results['data'] and 'CV' in results['data']['Get']:
+                candidates = results['data']['Get']['CV']
+                logger.info(f"Found {len(candidates)} candidates by exact skills")
+                for candidate in candidates:
+                    logger.info(f"Candidate {candidate['filename']} matched by exact skills")
+            else:
+                logger.warning("No candidates found by exact skills")
 
-            if result and "data" in result and "Get" in result["data"] and "Resume" in result["data"]["Get"]:
-                return result["data"]["Get"]["Resume"]
-            return []
+            # If no results, try fuzzy content search
+            if not candidates:
+                content_filter = {
+                    "operator": "Or",
+                    "operands": [
+                        {
+                            "path": ["content"],
+                            "operator": "Like",
+                            "valueString": f"*{skill.lower()}*"
+                        } for skill in skills
+                    ]
+                }
+
+                results = (
+                    self.client.query
+                    .get("CV", ["content", "skills", "filename"])
+                    .with_where(content_filter)
+                    .with_limit(limit)
+                    .do()
+                )
+
+                if results and 'data' in results and 'Get' in results['data'] and 'CV' in results['data']['Get']:
+                    candidates = results['data']['Get']['CV']
+                    logger.info(f"Found {len(candidates)} candidates by fuzzy search")
+                    for candidate in candidates:
+                        logger.info(f"Candidate {candidate['filename']} matched by fuzzy search")
+                else:
+                    logger.warning("No candidates found by fuzzy search")
+
+            if not candidates:
+                logger.warning("No candidates found with either method")
+                return []
+
+            # Calculate matching skills for each candidate
+            for candidate in candidates:
+                candidate_skills = set(candidate.get('skills', []))
+                matching_skills = candidate_skills.intersection(set(skills))
+                candidate['matching_count'] = len(matching_skills)
+                logger.info(f"Candidate {candidate['filename']} has {len(matching_skills)} matching skills: {matching_skills}")
+
+            # Sort by number of matching skills
+            candidates.sort(key=lambda x: x['matching_count'], reverse=True)
+            
+            return candidates
+            
         except Exception as e:
-            logger.error(f"Error querying database: {str(e)}")
-            st.error(f"Error querying database: {str(e)}")
+            logger.error(f"Failed to find candidates for skills {skills}: {str(e)}")
             return []
 
-    def get_skill_distribution(self) -> Dict[str, int]:
+    def get_skill_distribution(self):
         """Get distribution of skills across all CVs"""
         try:
-            result = (
+            results = (
                 self.client.query
-                .get("Resume", ["skills"])
+                .get("CV", ["skills"])
                 .do()
             )
             
-            if not result or "data" not in result or "Get" not in result["data"] or "Resume" not in result["data"]["Get"]:
+            if not results or 'data' not in results or 'Get' not in results['data'] or 'CV' not in results['data']['Get']:
                 return {}
-
-            # Count occurrences of each skill
+                
+            # Count skills
             skill_counts = {}
-            for cv in result["data"]["Get"]["Resume"]:
-                if cv.get("skills"):
-                    for skill in cv["skills"]:
-                        skill_counts[skill] = skill_counts.get(skill, 0) + 1
-            
+            for cv in results['data']['Get']['CV']:
+                if not cv.get('skills'):
+                    continue
+                for skill in cv['skills']:
+                    skill_counts[skill] = skill_counts.get(skill, 0) + 1
+                    
             return skill_counts
+            
         except Exception as e:
-            logger.error(f"Error getting skill distribution: {str(e)}")
-            st.error(f"Error getting skill distribution: {str(e)}")
+            logger.error(f"Failed to get skill distribution: {str(e)}")
             return {}
 
-    def get_cv_count(self) -> int:
+    def get_cv_count(self):
         """Get the total number of CVs in the database"""
         try:
-            result = (
+            results = (
                 self.client.query
-                .aggregate("Resume")
+                .aggregate("CV")
                 .with_meta_count()
                 .do()
             )
             
-            logger.info(f"CV count query result: {result}")
-            if result and "data" in result and "Aggregate" in result["data"] and "Resume" in result["data"]["Aggregate"]:
-                return result["data"]["Aggregate"]["Resume"][0]["meta"]["count"]
+            if results and 'data' in results and 'Aggregate' in results['data'] and 'CV' in results['data']['Aggregate']:
+                return results['data']['Aggregate']['CV'][0]['meta']['count']
             return 0
+            
         except Exception as e:
-            logger.error(f"Error getting CV count: {str(e)}")
-            st.error(f"Error getting CV count: {str(e)}")
+            logger.error(f"Failed to get CV count: {str(e)}")
             return 0
 
-    def process_cv_directory(self, directory_path: str, progress_bar) -> int:
+    def process_cv_directory(self, directory_path: str, progress_bar):
         """Process all PDFs in a directory"""
         try:
-            # Clear existing data before processing
-            self.clear_database()
-            
-            # Find all PDF files recursively
-            pdf_files = []
-            for ext in ['.pdf', '.PDF']:
-                pdf_files.extend(glob.glob(os.path.join(directory_path, f'**/*{ext}'), recursive=True))
-            
-            total_files = len(pdf_files)
-            if total_files == 0:
-                return 0
-
-            # Process each file
-            for i, pdf_file in enumerate(pdf_files):
-                try:
-                    relative_path = os.path.relpath(pdf_file, directory_path)
-                    text_content = self.processor.extract_text_from_pdf(pdf_file)
-                    skills = self.processor.extract_skills(text_content)
-                    
-                    # Store in Weaviate
-                    properties = {
-                        "content": text_content,
-                        "filename": relative_path,
-                        "skills": skills
-                    }
-                    
-                    self.client.data_object.create(
-                        data_object=properties,
-                        class_name="Resume"
-                    )
-                    
-                    # Update progress
-                    progress = (i + 1) / total_files
-                    progress_bar.progress(progress)
-                    
-                except Exception as e:
-                    logger.error(f"Error processing {pdf_file}: {str(e)}")
-                    st.warning(f"Error processing {pdf_file}: {str(e)}")
-                    continue
-            
-            return total_files
+            # Process the CVs
+            self.processor.process_directory(directory_path, progress_bar.progress)
+            # Force refresh the CV count
+            st.session_state.cv_count = self.get_cv_count()
+            st.session_state.cv_processed = True
         except Exception as e:
-            logger.error(f"Error processing directory: {str(e)}")
-            st.error(f"Error processing directory: {str(e)}")
-            return 0
+            logger.error(f"Failed to process CV directory: {str(e)}")
+            raise
 
     def clear_database(self):
         """Clear all data from the database"""
         try:
             self.processor.clear_database()
+            st.session_state.cv_processed = False
+            st.session_state.cv_count = 0
         except Exception as e:
-            logger.error(f"Error clearing database: {str(e)}")
-            st.error(f"Error clearing database: {str(e)}")
+            logger.error(f"Failed to clear database: {str(e)}")
+            raise
 
-def highlight_skills(text: str, skills: List[str]) -> str:
-    """Highlight skills in text with color"""
-    highlighted_text = text
-    for skill in skills:
-        # Create a case-insensitive pattern that matches whole words
-        pattern = re.compile(f'\\b{re.escape(skill)}\\b', re.IGNORECASE)
-        highlighted_text = pattern.sub(f'<span style="background-color: #ffd700; font-weight: bold;">{skill}</span>', highlighted_text)
-    return highlighted_text
+def highlight_skills(text: str, selected_skills: List[str]) -> str:
+    """Highlight skills in text with their respective colors"""
+    highlighted = text
+    # Sort skills by length (longest first) to avoid partial matches
+    sorted_skills = sorted(selected_skills, key=len, reverse=True)
+    for skill in sorted_skills:
+        color = TECH_SKILLS[skill]["color"]
+        pattern = re.compile(re.escape(skill), re.IGNORECASE)
+        highlighted = pattern.sub(f'**:{color}[{skill}]**', highlighted)
+    return highlighted
 
 def get_cv_download_link(filename: str, directory_path: str) -> str:
     """Generate a download link for a CV file"""
     try:
-        # Search for the file recursively in the directory
-        for root, _, files in os.walk(directory_path):
-            for file in files:
-                if file.lower() == filename.lower():
-                    file_path = os.path.join(root, file)
-                    with open(file_path, "rb") as f:
-                        pdf_bytes = f.read()
-                        b64 = base64.b64encode(pdf_bytes).decode()
-                        href = f'<a href="data:application/pdf;base64,{b64}" download="{filename}">📥 Download CV</a>'
-                        return href
-        return ""
+        file_path = os.path.join(directory_path, filename)
+        with open(file_path, "rb") as f:
+            bytes_data = f.read()
+        b64 = base64.b64encode(bytes_data).decode()
+        href = f'<a href="data:application/pdf;base64,{b64}" download="{filename}">Download {filename}</a>'
+        return href
     except Exception as e:
-        logger.error(f"Error creating download link for {filename}: {str(e)}")
-        st.error(f"Error creating download link for {filename}: {str(e)}")
+        logger.error(f"Failed to generate download link for {filename}: {str(e)}")
         return ""
 
 def show_documentation():
     """Show documentation in the sidebar"""
-    st.sidebar.title("Documentation")
+    st.sidebar.markdown("""
+    # CV Analysis Tool Help
     
-    # About section
-    with st.sidebar.expander("About"):
-        st.markdown("""
-        ### CV Analysis Tool
-        This tool helps you analyze CVs and find the best candidates based on their skills.
-        
-        Key features:
-        - Upload and process CVs in PDF format
-        - Extract skills automatically
-        - Search candidates by required skills
-        - View skill distribution across all CVs
-        """)
+    ## Quick Start
+    1. Place your CV files in the `data/cv` directory
+    2. Click 'Process CV Directory' to analyze them
+    3. Select skills to find matching candidates
     
-    # How to Use section
-    with st.sidebar.expander("How to Use"):
-        st.markdown("""
-        ### Quick Start Guide
-        1. **Upload CVs**
-           - Place your CV files in the `data/cv` directory
-           - Click 'Process CV Directory' to analyze them
-        
-        2. **Find Candidates**
-           - Select required skills from the dropdown
-           - The system will show candidates matching ALL selected skills
-        
-        3. **View Results**
-           - See skill distribution across all CVs
-           - View matching candidates with highlighted skills
-           - Download original CV files
-        """)
+    ## Features
+    - Process PDF CVs automatically
+    - Extract skills using AI
+    - Search candidates by required skills
+    - View skill distribution
+    - Download original CVs
     
-    # Technical Details
-    with st.sidebar.expander("Technical Details"):
-        st.markdown("""
-        ### System Architecture
-        - Uses Weaviate vector database for CV storage
-        - Implements semantic search for matching
-        - Supports PDF file processing
-        - Extracts skills using keyword matching
-        
-        ### File Requirements
-        - Supported formats: PDF
-        - Directory structure:
-          ```
-          data/
-          └── cv/
-              └── your_cv_files.pdf
-          ```
-        """)
+    ## Directory Structure
+    ```
+    data/
+    └── cv/
+        └── your_cv_files.pdf
+    ```
     
-    # Troubleshooting
-    with st.sidebar.expander("Troubleshooting"):
-        st.markdown("""
-        ### Common Issues
-        1. **CVs not found**
-           - Ensure files are in the correct directory
-           - Check file permissions
-        
-        2. **Skills not detected**
-           - Verify PDF is text-based (not scanned)
-           - Check if skills are written as expected
-        
-        3. **No results**
-           - Try reducing the number of selected skills
-           - Check if CVs were processed successfully
-        """)
+    ## Common Issues
+    1. **CVs not found**: Check if files are in `data/cv` directory
+    2. **Skills not detected**: Ensure PDFs are text-based
+    3. **No results**: Try selecting different skills
+    
+    ## Need More Help?
+    Contact support at support@example.com
+    """)
 
 def main():
+    # Set page config at the very beginning
     st.set_page_config(
         page_title="CV Analysis Tool",
         page_icon="📄",
         layout="wide",
-        menu_items={
-            'Get Help': """
-            # CV Analysis Tool Help
-            
-            ## Quick Start
-            1. Place your CV files in the `data/cv` directory
-            2. Click 'Process CV Directory' to analyze them
-            3. Select skills to find matching candidates
-            
-            ## Features
-            - Process PDF CVs automatically
-            - Extract skills using AI
-            - Search candidates by required skills
-            - View skill distribution
-            - Download original CVs
-            
-            ## Directory Structure
-            ```
-            data/
-            └── cv/
-                └── your_cv_files.pdf
-            ```
-            
-            ## Common Issues
-            1. **CVs not found**: Check if files are in `data/cv` directory
-            2. **Skills not detected**: Ensure PDFs are text-based
-            3. **No results**: Try reducing selected skills
-            
-            ## Need More Help?
-            Contact support at support@example.com
-            """,
-            
-            'Report a Bug': "https://github.com/yourusername/cv-analyzer/issues",
-            
-            'About': """
-            ### CV Analysis Tool v1.0
-            
-            A powerful tool for analyzing CVs and finding the best candidates based on their skills.
-            
-            **Key Features:**
-            - PDF Processing
-            - Skill Extraction
-            - Candidate Matching
-            - Skill Distribution Analysis
-            
-            **Technologies Used:**
-            - Python
-            - Streamlit
-            - Weaviate Vector Database
-            - PyPDF for PDF processing
-            
-            **Created by:** Your Company Name
-            **License:** MIT
-            
-            2025 All rights reserved.
-            """
-        }
+        initial_sidebar_state="expanded"
     )
-    
-    # Main content
-    st.title("CV Analysis Tool")
-    
+
+    # Initialize session state
+    if 'selected_skills' not in st.session_state:
+        st.session_state.selected_skills = []
+    if 'cv_processed' not in st.session_state:
+        st.session_state.cv_processed = False
+    if 'cv_count' not in st.session_state:
+        st.session_state.cv_count = 0
+
+    # Initialize CV analyzer
     analyzer = CVAnalyzer()
     
-    # Database management section
-    st.sidebar.header("Database Management")
-    cv_count = analyzer.get_cv_count()
-    st.sidebar.write(f"Current CVs in database: {cv_count}")
+    # Show documentation in sidebar
+    show_documentation()
     
-    if st.sidebar.button(" Clear Database"):
-        analyzer.clear_database()
-        st.sidebar.success("Database cleared successfully!")
-        st.experimental_rerun()
+    # Main content
+    st.title("CV Analysis Tool 📄")
     
-    # CV Directory Processing
-    st.sidebar.header("Process CV Directory")
+    col1, col2 = st.columns(2)
     
-    # Use the folder upload component
-    # upload_result = folder_uploader(
-    #     key="cv_folder",
-    #     label="Upload CV Folder",
-    #     help="Drag and drop a folder containing CVs",
-    #     allowed_extensions=[".pdf", ".PDF"],
-    #     max_file_size=50 * 1024 * 1024  # 50MB per file
-    # )
+    # Process CV directory
+    if col1.button("Process CV Directory", use_container_width=True):
+        try:
+            progress_bar = st.progress(0)
+            analyzer.process_cv_directory(config.CV_DIR, progress_bar)
+            st.success("✅ Successfully processed CV directory!")
+            time.sleep(1)  # Give time for the success message to show
+            st.experimental_rerun()  # Rerun to update the interface
+        except Exception as e:
+            st.error(f"❌ Failed to process CV directory: {str(e)}")
     
-    # if upload_result:
-    #     if 'error' in upload_result:
-    #         st.sidebar.error(upload_result['error'])
-    #     elif 'files' in upload_result:
-    #         st.sidebar.success(f"Found {len(upload_result['files'])} files")
+    # Clear database
+    if col2.button("Clear Database", use_container_width=True):
+        try:
+            analyzer.clear_database()
+            st.session_state.selected_skills = []  # Clear selected skills
+            st.success("✅ Successfully cleared database!")
+            time.sleep(1)  # Give time for the success message to show
+            st.experimental_rerun()  # Rerun to update the interface
+        except Exception as e:
+            st.error(f"❌ Failed to clear database: {str(e)}")
+    
+    # Show CV count
+    cv_count = st.session_state.cv_count
+    st.write(f"📊 Total CVs in database: {cv_count}")
+    
+    if cv_count > 0:
+        # Get skill distribution
+        skill_dist = analyzer.get_skill_distribution()
+        
+        # Plot skill distribution
+        if skill_dist:
+            fig = go.Figure(data=[
+                go.Bar(
+                    x=list(skill_dist.keys()),
+                    y=list(skill_dist.values()),
+                    text=list(skill_dist.values()),
+                    textposition='auto',
+                )
+            ])
             
-    #         # Show file details
-    #         with st.sidebar.expander("View Files"):
-    #             total_size = 0
-    #             for file in upload_result['files']:
-    #                 size_mb = file['size'] / (1024 * 1024)
-    #                 total_size += file['size']
-    #                 st.write(f" {file['name']} ({size_mb:.1f} MB)")
-    #             st.write(f"Total size: {total_size / (1024 * 1024):.1f} MB")
+            fig.update_layout(
+                title="Skill Distribution Across CVs",
+                xaxis_title="Skills",
+                yaxis_title="Number of CVs",
+                showlegend=False,
+                height=400  # Fixed height for better visibility
+            )
             
-    #         # Process the files
-    #         if st.sidebar.button(" Process Files"):
-    #             progress_bar = st.sidebar.progress(0)
-    #             st.sidebar.write("Processing CVs...")
-                
-    #             # Create full paths for files
-    #             full_path = os.path.join(config.DATA_DIR, upload_result.get('path', ''))
-                
-    #             # Process directory
-    #             total_files = analyzer.process_cv_directory(full_path, progress_bar)
-                
-    #             if total_files > 0:
-    #                 st.sidebar.success(f"Processed {total_files} CVs successfully!")
-    #             else:
-    #                 st.sidebar.warning("No PDF files found in the directory")
-                
-    #             progress_bar.empty()
-    #             st.experimental_rerun()
-    
-    # Manual path input as fallback
-    st.sidebar.markdown("---")
-    st.sidebar.write("Or enter path manually:")
-    cv_dir = st.sidebar.text_input(
-        "Directory path (relative to data folder)",
-        help="Enter the path to your CV directory, relative to the data folder"
-    )
-    
-    if cv_dir and st.sidebar.button(" Process Directory"):
-        full_path = os.path.join(config.DATA_DIR, cv_dir)
-        if not os.path.exists(full_path):
-            st.sidebar.error(f"Directory not found: {cv_dir}")
-        else:
-            progress_bar = st.sidebar.progress(0)
-            st.sidebar.write("Processing CVs...")
-            
-            total_files = analyzer.process_cv_directory(full_path, progress_bar)
-            
-            if total_files > 0:
-                st.sidebar.success(f"Processed {total_files} CVs successfully!")
-            else:
-                st.sidebar.warning("No PDF files found in the directory")
-            
-            progress_bar.empty()
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Skill selection
+        st.subheader("🔍 Find Candidates by Skills")
+        
+        # Create columns for skill checkboxes
+        cols = st.columns(4)
+        all_skills = sorted(TECH_SKILLS.keys())
+        skills_per_col = len(all_skills) // 4 + (1 if len(all_skills) % 4 else 0)
+        
+        # Reset selected skills if requested
+        if st.button("Clear Selected Skills", use_container_width=True):
+            st.session_state.selected_skills = []
             st.experimental_rerun()
-    
-    # Skill selection section
-    st.subheader("Select Required Skills")
-    selected_skills = []
-    cols = st.columns(3)
-    for idx, skill in enumerate(analyzer.tech_skills):
-        col_idx = idx % 3
-        with cols[col_idx]:
-            if st.checkbox(skill):
-                selected_skills.append(skill)
-    
-    if selected_skills:
-        st.subheader("Best Matching Candidates")
-        candidates = analyzer.find_best_candidates(selected_skills)
         
-        if not candidates:
-            st.warning("No matching candidates found with the selected skills.")
-            return
+        # Display skill checkboxes in columns
+        for i, col in enumerate(cols):
+            with col:
+                start_idx = i * skills_per_col
+                end_idx = min((i + 1) * skills_per_col, len(all_skills))
+                st.write("**Skills Group {}**".format(i + 1))
+                for skill in all_skills[start_idx:end_idx]:
+                    if st.checkbox(skill, key=f"skill_{skill}", value=skill in st.session_state.selected_skills):
+                        if skill not in st.session_state.selected_skills:
+                            st.session_state.selected_skills.append(skill)
+                    elif skill in st.session_state.selected_skills:
+                        st.session_state.selected_skills.remove(skill)
         
-        for idx, candidate in enumerate(candidates, 1):
-            if not isinstance(candidate, dict):
-                continue
-                
-            filename = candidate.get('filename', 'Unknown')
-            skills = candidate.get('skills', [])
-            content = candidate.get('content', '')
+        # Find candidates for selected skills
+        if st.session_state.selected_skills:
+            candidates = analyzer.find_candidates_by_skills(st.session_state.selected_skills)
             
-            with st.expander(f"{idx}. {filename}"):
-                if skills:
-                    # Highlight matched skills in the skills list
-                    skill_text = []
-                    for skill in skills:
-                        if skill in selected_skills:
-                            skill_text.append(f'<span style="background-color: #ffd700; font-weight: bold;">{skill}</span>')
-                        else:
-                            skill_text.append(skill)
-                    st.markdown("**Skills:** " + ", ".join(skill_text), unsafe_allow_html=True)
+            if candidates:
+                st.write(f"Found {len(candidates)} candidates with selected skills:")
                 
-                if content:
-                    # Highlight skills in content
-                    highlighted_content = highlight_skills(content, selected_skills)
-                    st.markdown("**CV Content:**", unsafe_allow_html=True)
-                    st.markdown(f'<div style="border: 1px solid #ddd; padding: 10px; height: 200px; overflow-y: auto;">{highlighted_content}</div>', 
-                              unsafe_allow_html=True)
-                
-                # Add download button
-                download_link = get_cv_download_link(filename, config.DATA_DIR)
-                if download_link:
-                    st.markdown(download_link, unsafe_allow_html=True)
-                else:
-                    st.error("CV file not found")
-
-    # Show skill distribution
-    st.subheader("Skill Distribution Across All CVs")
-    skill_dist = analyzer.get_skill_distribution()
-    
-    if not skill_dist:
-        st.warning("No CVs found in the database. Please upload some CVs first.")
-        return
-        
-    # Sort skills by frequency
-    sorted_skills = sorted(skill_dist.items(), key=lambda x: x[1], reverse=True)
-    skills = [s[0] for s in sorted_skills]
-    counts = [s[1] for s in sorted_skills]
-    
-    # Create bar chart
-    fig = go.Figure(data=[
-        go.Bar(
-            x=skills,
-            y=counts,
-            text=counts,
-            textposition='auto',
-        )
-    ])
-    
-    # Update layout
-    fig.update_layout(
-        title="Skill Distribution",
-        xaxis_title="Skills",
-        yaxis_title="Number of CVs",
-        showlegend=False,
-        xaxis_tickangle=-45,
-        height=500,
-        margin=dict(t=30, b=100)  # Increase bottom margin for rotated labels
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+                for candidate in candidates:
+                    matching_skills = [s for s in candidate['skills'] if s in st.session_state.selected_skills]
+                    other_skills = [s for s in candidate['skills'] if s not in st.session_state.selected_skills]
+                    
+                    with st.expander(f"📄 {candidate['filename']} ({candidate['matching_count']} matching skills)"):
+                        # Show matching skills first, then other skills
+                        if matching_skills:
+                            st.write("**Matching Skills:**", ", ".join(matching_skills))
+                        if other_skills:
+                            st.write("**Other Skills:**", ", ".join(other_skills))
+                        
+                        # Show highlighted content
+                        highlighted_content = highlight_skills(candidate['content'], st.session_state.selected_skills)
+                        st.markdown(highlighted_content)
+                        
+                        # Add download link
+                        download_link = get_cv_download_link(candidate['filename'], config.CV_DIR)
+                        st.markdown(download_link, unsafe_allow_html=True)
+            else:
+                st.warning("No candidates found with selected skills.")
+        else:
+            st.info("Select one or more skills to find matching candidates.")
+    else:
+        st.warning("No CVs in database. Please process CV directory first.")
 
 if __name__ == "__main__":
     main()

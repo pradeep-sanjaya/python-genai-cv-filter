@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   weaviate:
     image: semitechnologies/weaviate:1.21.3
@@ -26,15 +28,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.processor
     volumes:
-      - type: bind
-        source: ${PWD}/..
-        target: /app
-      - type: bind
-        source: ${PWD}/../../data
-        target: /data
-      - type: volume
-        source: pip_cache
-        target: /root/.cache/pip
+      - ../:/app
+      - ../../data:/data
     environment:
       - PYTHONUNBUFFERED=1
       - WEAVIATE_URL=http://weaviate:8080
@@ -46,24 +41,18 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.gui
-    volumes:
-      - type: bind
-        source: ${PWD}/..
-        target: /app
-      - type: bind
-        source: ${PWD}/../../data
-        target: /data
-      - type: volume
-        source: pip_cache
-        target: /root/.cache/pip
     ports:
       - "8501:8501"
+    volumes:
+      - ../:/app
+      - ../../data:/data
     environment:
       - PYTHONUNBUFFERED=1
       - WEAVIATE_URL=http://weaviate:8080
       - PYTHONPATH=/app
     depends_on:
       - weaviate
+      - processor
 
 volumes:
   weaviate_data:
